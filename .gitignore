@@ -218,3 +218,41 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ==========================================
+# Audio, Datasets & Archives
+# ==========================================
+data/
+datasets/
+raw_data/
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.tar.gz
+*.zip
+
+# ==========================================
+# PyTorch Checkpoints & Weights
+# ==========================================
+checkpoints/
+weights/
+saved_models/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# ==========================================
+# Experiment Logs & Metric Trackers
+# ==========================================
+runs/
+wandb/
+tensorboard/
+lightning_logs/
+
+# ==========================================
+# Cloud / Kaggle / Colab Output Staging
+# ==========================================
+/kaggle/
+/content/
