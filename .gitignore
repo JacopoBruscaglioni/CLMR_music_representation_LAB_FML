@@ -1,8 +1,12 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
+*.pt
 *.py[codz]
 *$py.class
 
+.fml_lab_venv/
+data/
+checkpoints/
 # C extensions
 *.so
 
