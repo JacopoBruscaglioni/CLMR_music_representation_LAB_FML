@@ -11,6 +11,7 @@ Valutazione a valle (Linear Probing) del modello CLMR pre-addestrato:
 
 import argparse
 import sys
+import os
 import time
 
 import torch
@@ -180,6 +181,12 @@ def main():
         if epoch % 5 == 0 or epoch == args.epochs:
             print(f"Epoca [{epoch:02d}/{args.epochs:02d}] - Linear Probe Loss: {loss:.4f}")
 
+    # SALVATAGGIO DEI PESI (subito dopo il ciclo for)
+    os.makedirs("checkpoints", exist_ok=True)
+    probe_save_path = "checkpoints/linear_probe_best.pt"
+    torch.save(classifier.state_dict(), probe_save_path)
+    print(f"\n[Checkpoint] Pesi del Linear Probe salvati in: {probe_save_path}\n")
+    
     # 6. Valutazione finale con aggregazione multi-segmento
     print("\nCalcolo metriche con Test-Time Averaging sul dataset di test...")
     top1, top3, roc_auc, report = evaluate_aggregated(encoder, classifier, test_loader, device)
