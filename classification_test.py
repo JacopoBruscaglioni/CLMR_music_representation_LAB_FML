@@ -3,103 +3,104 @@ import os
 import torch
 import torch.nn.functional as F
 import soundfile as sf
-import torchaudio.transforms as T
-from src.model import CLMREncoder, LinearProbeClassifier
+import torchaudio
 
-GENRES = [
-    "blues", "classical", "country", "disco", "hiphop",
-    "jazz", "metal", "pop", "reggae", "rock"
-]
+try:
+    from src.dataset import GTZAN_GENRES, load_audio_file
+    from src.augmentations import AudioDataAugmentation
+    from src.models import CLMRModel, AudioLinearClassifier
+except ModuleNotFoundError:
+    from dataset import GTZAN_GENRES, load_audio_file
+    from augmentations import AudioDataAugmentation
+    from models import CLMRModel, AudioLinearClassifier
 
-def load_and_preprocess_audio(audio_path, sample_rate=22050, num_segments=10, segment_duration=2.97):
-    # Caricamento del file audio tramite soundfile
-    data, orig_sr = sf.read(audio_path, dtype='float32')
-    tensor = torch.from_numpy(data)
 
-    # Conversione in mono [1, campioni] se stereo o multicanale
-    if tensor.ndim == 1:
-        tensor = tensor.unsqueeze(0)
-    elif tensor.ndim == 2:
-        tensor = tensor.mean(dim=1, keepdim=True).t()
+def spec_from_audio(audio_chunk: torch.Tensor, augmenter: AudioDataAugmentation) -> torch.Tensor:
+    """Replica esattamente la trasformazione usata in GTZANDownstreamDataset._spec_from_audio."""
+    mel = augmenter.mel_transform(audio_chunk)
+    log_mel = augmenter.amplitude_to_db(mel)
+    mean = log_mel.mean()
+    std = log_mel.std().clamp(min=1e-3)
+    return (log_mel - mean) / std
 
-    # Ricampionamento alla frequenza target della pipeline (22050 Hz)
-    if orig_sr != sample_rate:
-        resampler = T.Resample(orig_sr, sample_rate)
-        tensor = resampler(tensor)
 
-    total_samples = tensor.shape[-1]
-    target_samples = int(sample_rate * segment_duration)
+def preprocess_track(audio_path: str, augmenter: AudioDataAugmentation, num_segments: int = 10) -> torch.Tensor:
+    waveform = load_audio_file(audio_path, target_sr=augmenter.sample_rate)
 
-    if total_samples < target_samples:
-        raise ValueError(
-            f"Il brano è troppo breve ({total_samples / sample_rate:.2f}s). "
-            f"Durata minima richiesta: {segment_duration:.2f}s"
-        )
+    waveform = waveform / (torch.max(torch.abs(waveform)) + 1e-8) 
 
-    # Estrazione di 10 finestre uniformi distribuite lungo l'intera traccia
-    step = (total_samples - target_samples) // max(1, (num_segments - 1))
-    mel_transform = T.MelSpectrogram(
-        sample_rate=sample_rate,
-        n_fft=1024,
-        hop_length=512,
-        n_mels=64
-    )
+    max_val = torch.max(torch.abs(waveform))
+    if max_val > 0:
+        waveform = waveform / max_val
 
-    segments = []
-    for i in range(num_segments):
-        start = i * step
-        chunk = tensor[..., start:start + target_samples]
-        mel = mel_transform(chunk)
-        log_mel = torch.log(torch.clamp(mel, min=1e-5))
-        segments.append(log_mel)
+    total_samples = waveform.shape[-1]
+    win_samples = augmenter.target_samples
 
-    # Forma finale del tensore: [10, 1, 64, 130]
+    if total_samples <= win_samples:
+        pad = win_samples - total_samples
+        waveform = F.pad(waveform, (0, pad))
+        segments = [spec_from_audio(waveform, augmenter)] * num_segments
+    else:
+        stride = (total_samples - win_samples) // max(1, (num_segments - 1))
+        segments = []
+        for s in range(num_segments):
+            start = s * stride
+            chunk = waveform[..., start : start + win_samples]
+            segments.append(spec_from_audio(chunk, augmenter))
+
     return torch.stack(segments, dim=0)
 
+
 def main():
-    parser = argparse.ArgumentParser(description="Test di classificazione su brano singolo (Test-Time Aggregation)")
-    parser.add_argument("--audio_path", type=str, required=True, help="Percorso del file audio da testare (.wav, .mp3, ecc.)")
+    parser = argparse.ArgumentParser(description="Test classificazione traccia singola")
+    parser.add_argument("--audio_path", type=str, required=True, help="Percorso del file audio")
     parser.add_argument("--backbone_path", type=str, default="checkpoints/clmr_best_backbone.pt")
     parser.add_argument("--probe_path", type=str, default="checkpoints/linear_probe_best.pt")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Inizializzazione e caricamento dell'encoder ResNet-18
-    encoder = CLMREncoder().to(device)
-    encoder.load_state_dict(torch.load(args.backbone_path, map_location=device))
-    encoder.eval()
+    # Pipeline di trasformazione originale
+    augmenter = AudioDataAugmentation()
 
-    # Inizializzazione e caricamento della testa lineare
-    probe = LinearProbeClassifier(in_features=512, num_classes=len(GENRES)).to(device)
-    if not os.path.exists(args.probe_path):
-        raise FileNotFoundError(f"File pesi non trovato in '{args.probe_path}'. Esegui prima train_linear_probe.py.")
-    
-    probe.load_state_dict(torch.load(args.probe_path, map_location=device))
-    probe.eval()
+    # Caricamento Backbone
+    model = CLMRModel(pretrained_backbone=False).to(device)
+    ckpt = torch.load(args.backbone_path, map_location=device)
+    if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
+        model.load_state_dict(ckpt["model_state_dict"])
+    else:
+        model.load_state_dict(ckpt)
+    model.eval()
 
-    # Preprocessing delle 10 finestre
-    segments = load_and_preprocess_audio(args.audio_path).to(device)
+    # Caricamento Linear Probe
+    classifier = AudioLinearClassifier(in_features=512, num_classes=len(GTZAN_GENRES)).to(device)
+    probe_ckpt = torch.load(args.probe_path, map_location=device)
+    if isinstance(probe_ckpt, dict) and "model_state_dict" in probe_ckpt:
+        classifier.load_state_dict(probe_ckpt["model_state_dict"])
+    else:
+        classifier.load_state_dict(probe_ckpt)
+    classifier.eval()
 
-    # Inferenza con Test-Time Aggregation
+    # Preprocessing identico al downstream test set
+    segments = preprocess_track(args.audio_path, augmenter, num_segments=10).to(device)
+
     with torch.no_grad():
-        features = encoder(segments)
-        logits = probe(features)
-        probs_per_segment = F.softmax(logits, dim=1)
-        mean_probs = probs_per_segment.mean(dim=0)
+        h = model.encode(segments)
+        logits = classifier(h)
+        probs = F.softmax(logits, dim=1).mean(dim=0)
 
-    # Ordinamento decrescente delle confidenze
-    sorted_indices = torch.argsort(mean_probs, descending=True)
+    sorted_indices = torch.argsort(probs, descending=True)
 
     print("\n" + "=" * 55)
-    print(f"🎵 RISULTATO CLASSIFICAZIONE: {os.path.basename(args.audio_path)}")
+    print(f"🎵 BRANO: {os.path.basename(args.audio_path)}")
     print("=" * 55)
     for rank, idx in enumerate(sorted_indices, 1):
-        genre = GENRES[idx.item()]
-        conf = mean_probs[idx.item()].item() * 100
+        genre = GTZAN_GENRES[idx.item()]
+        conf = probs[idx.item()].item() * 100
         bar = "█" * int(conf // 4)
         print(f"{rank:2d}. {genre:<10} {conf:6.2f}% | {bar}")
     print("=" * 55 + "\n")
+
 
 if __name__ == "__main__":
     main()
