@@ -9,10 +9,10 @@ import src
 
 try:
     from src.dataset import get_downstream_dataloaders, GTZAN_GENRES
-    from src.model import CLMRModel, AudioLinearClassifier
+    from src.models import CLMRModel, AudioLinearClassifier
 except ModuleNotFoundError:
     from dataset import get_downstream_dataloaders, GTZAN_GENRES
-    from model import CLMRModel, AudioLinearClassifier
+    from models import CLMRModel, AudioLinearClassifier
 
 def main():
     # hyperparameters
