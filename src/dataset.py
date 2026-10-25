@@ -32,6 +32,28 @@ GENRE_TO_IDX = {genre: i for i, genre in enumerate(GTZAN_GENRES)}
 
 GTZAN_DOWNLOAD_URL = "https://huggingface.co/datasets/marsyas/gtzan/resolve/main/data/genres.tar.gz"
 
+
+def is_audio_valid(file_path: str, min_samples: int = 65488) -> bool:
+    """Verifica rapidamente se l'header audio è integro e sufficientemente lungo."""
+    try:
+        # Reindirizza temporaneamente lo stderr C per zittire libmpg123 durante il test
+        devnull_fd = os.open(os.devnull, os.O_WRONLY)
+        old_stderr = os.dup(2)
+        try:
+            os.dup2(devnull_fd, 2)
+            info = sf.info(file_path)
+        finally:
+            os.dup2(old_stderr, 2)
+            os.close(old_stderr)
+            os.close(devnull_fd)
+
+        # Controlla durata minima (~2.97s a 22050Hz)
+        duration_samples = int(info.duration * 22050)
+        return duration_samples >= min_samples
+    except Exception:
+        return False
+
+
 def ensure_gtzan_dataset(data_dir: str = "data/genres_original") -> str:
     """
     Verifica se il dataset GTZAN è presente. Se non presente,
@@ -109,26 +131,57 @@ def find_audio_files(data_dir: str) -> List[Tuple[str, int]]:
     """
     Scansiona ricorsivamente la cartella escludendo file nascosti o metadati macOS (._*).
     """
-    data_dir = ensure_gtzan_dataset(data_dir)
+    if "genres_original" in str(data_dir) or "gtzan" in str(data_dir).lower():
+        data_dir = ensure_gtzan_dataset(data_dir)
 
+    root = Path(data_dir)
+    if not root.exists():
+        raise FileNotFoundError(f"La cartella specificata non esiste: {data_dir}")
+
+    skipped_count = 0
     audio_files = []
     root = Path(data_dir)
 
-    for ext in ("*.wav", "*.au"):
+    for ext in ("*.wav", "*.au", "*.mp3"):
         for path in root.rglob(ext):
             # Ignora file spazzatura di sistema/macOS che iniziano con "._" o "."
             if path.name.startswith("."):
                 continue
+            
+            str_path = str(path)
+
+            if ext == "*.mp3" and not is_audio_valid(str_path):
+                skipped_count += 1
+                continue
 
             genre = path.parent.name.lower()
-            if genre in GENRE_TO_IDX:
-                audio_files.append((str(path), GENRE_TO_IDX[genre]))
+            # Se la cartella genitore è un genere GTZAN, usa il suo indice, altrimenti 0
+            genre_idx = GENRE_TO_IDX.get(genre, 0)
+
+            audio_files.append((str_path, genre_idx))
+    if skipped_count > 0:
+        print(f"[Dataset] Rimossi {skipped_count} file MP3 corrotti/illeggibili.")
 
     return sorted(audio_files, key=lambda x: x[0])
 
 def load_audio_file(audio_path: str, target_sr: int) -> torch.Tensor:
     """Carica un file audio tramite soundfile ed esegue mono + resampling."""
-    data, sr = sf.read(audio_path, dtype="float32")
+
+    devnull_fd= os.open(os.devnull, os.O_WRONLY)
+    old_stderr = os.dup(2)
+    try:
+        os.dup2(devnull_fd, 2)
+        data, sr = sf.read(audio_path, dtype="float32", always_2d=True)
+    except Exception as e:
+        raise RuntimeError(f"File audio non leggibile: {audio_path} ({e})")
+    finally:
+        os.dup2(old_stderr, 2)
+        os.close(old_stderr)
+        os.close(devnull_fd)
+
+    if data is None or len(data) == 0:
+        raise RuntimeError(f"File audio vuoto: {audio_path}")
+
     waveform = torch.from_numpy(data)
 
     if waveform.ndim == 1:
@@ -164,10 +217,17 @@ class GTZANCLMRDataset(Dataset):
         return len(self.file_list)
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        for attempt in range(3):
+        for attempt in range(5):
             audio_path, _ = self.file_list[(idx + attempt) % len(self.file_list)]
             try:
                 waveform = load_audio_file(audio_path, self.augmenter.sample_rate)
+                
+                if waveform.shape[-1] < self.augmenter.target_samples:
+                    continue
+
+                if torch.isnan(waveform).any() or torch.isinf(waveform).any():
+                    continue
+
                 return self.augmenter(waveform)
             except Exception:
                 continue
