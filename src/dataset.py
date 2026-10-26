@@ -250,41 +250,41 @@ def load_audio_file(audio_path: str, target_sr: int) -> torch.Tensor:
 
 
 class GTZANCLMRDataset(Dataset):
-    """
-    Dataset per il pre-training Self-Supervised.
-    Ignora i generi musicali e restituisce due viste aumentate: (view_1, view_2).
-    """
-
-    def __init__(
-        self,
-        file_list: List[Tuple[str, int]],
-        augmentation_pipeline: AudioDataAugmentation,
-    ):
+    def __init__(self, file_list: List[Tuple[str, int]], target_samples: int = 65488, target_sr: int = 22050):
         self.file_list = file_list
-        self.augmenter = augmentation_pipeline
+        self.target_samples = target_samples
+        self.target_sr = target_sr
 
     def __len__(self) -> int:
         return len(self.file_list)
 
+    def _get_random_crop(self, waveform: torch.Tensor) -> torch.Tensor:
+        length = waveform.shape[-1]
+        if length > self.target_samples:
+            max_start = length - self.target_samples
+            start = torch.randint(0, max_start + 1, (1,)).item()
+            return waveform[:, start : start + self.target_samples]
+        elif length < self.target_samples:
+            return torch.nn.functional.pad(waveform, (0, self.target_samples - length))
+        return waveform
+
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         for attempt in range(5):
-            audio_path, _ = self.file_list[(idx + attempt) % len(self.file_list)]
+            current_idx = (idx + attempt) % len(self.file_list)
+            audio_path, _ = self.file_list[current_idx]
             try:
-                waveform = load_audio_file(audio_path, self.augmenter.sample_rate)
-                
-                if waveform.shape[-1] < self.augmenter.target_samples:
+                waveform = load_audio_file(audio_path, self.target_sr)
+                if waveform.shape[-1] < self.target_samples:
                     continue
-
-                if torch.isnan(waveform).any() or torch.isinf(waveform).any():
-                    continue
-
-                return self.augmenter(waveform)
+                # La CPU estrae solo due ritagli grezzi senza applicare filtri pesanti
+                crop1 = self._get_random_crop(waveform)
+                crop2 = self._get_random_crop(waveform)
+                return crop1, crop2
             except Exception:
                 continue
 
-        dummy_wav = torch.zeros(1, self.augmenter.target_samples)
-        return self.augmenter(dummy_wav)
-
+        dummy = torch.zeros(1, self.target_samples)
+        return dummy, dummy
 
 class GTZANDownstreamDataset(Dataset):
     """
@@ -421,6 +421,7 @@ def get_clmr_dataloaders(
         shuffle=True,
         num_workers=num_workers,
         drop_last=True,  # drop_last=True è cruciale per NT-Xent per avere matrici di forma costante
+        pin_memory=True  # Precarica in RAM per velocizzare l'addestramento
     )
     val_loader = DataLoader(
         GTZANCLMRDataset(val_files, pipeline),
@@ -428,6 +429,7 @@ def get_clmr_dataloaders(
         shuffle=False,
         num_workers=num_workers,
         drop_last=True,
+        pin_memory=True  # Precarica in RAM per velocizzare l'addestramento
     )
 
     return train_loader, val_loader
