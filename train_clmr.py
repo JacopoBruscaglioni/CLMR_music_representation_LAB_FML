@@ -29,6 +29,20 @@ def parse_args():
         description="Pre-training CLMR (Contrastive Learning of Musical Representations)"
     )
     # Percorsi
+
+    parser.add_argument(
+        "--samples_per_genre",
+        type=int,
+        default=None,
+        help="Numero di tracce per genere per la stratificazione di FMA (es. 300). Se omesso, usa l'intero dataset.",
+    )
+    parser.add_argument(
+        "--metadata_path",
+        type=str,
+        default="data/fma_metadata/tracks.csv",
+        help="Percorso al file tracks.csv dei metadati di FMA.",
+    )
+
     parser.add_argument(
         "--data_dir",
         type=str,
@@ -123,6 +137,9 @@ def main():
             batch_size=args.batch_size,
             num_workers=args.num_workers,
             seed=args.seed,
+            val_split=args.val_split,
+            samples_per_genre=args.samples_per_genre,
+            metadata_path=args.metadata_path,
         )
         print(f"[Dataset] Batch train/epoca: {len(train_loader)} | Batch val: {len(val_loader)}")
     except FileNotFoundError as e:

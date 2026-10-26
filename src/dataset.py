@@ -8,6 +8,7 @@ Gestione del dataset GTZAN per:
 import os
 import sys
 import tarfile
+import pandas as pd
 import urllib.request
 from pathlib import Path
 from typing import List, Tuple, Optional
@@ -32,6 +33,55 @@ GENRE_TO_IDX = {genre: i for i, genre in enumerate(GTZAN_GENRES)}
 
 GTZAN_DOWNLOAD_URL = "https://huggingface.co/datasets/marsyas/gtzan/resolve/main/data/genres.tar.gz"
 
+
+def get_stratified_fma_files(
+    fma_dir: str = "data/fma_small",
+    tracks_csv_path: str = "data/fma_metadata/tracks.csv",
+    samples_per_genre: int = 300,
+    seed: int = 42,
+) -> List[Tuple[str, int]]:
+    """
+    Legge tracks.csv ed estrae esattamente 'samples_per_genre' per ciascuno
+    degli 8 generi macroscopici di FMA-small.
+    """
+    root = Path(fma_dir)
+    metadata_file = Path(tracks_csv_path)
+
+    if not metadata_file.exists():
+        raise FileNotFoundError(
+            f"File metadati non trovato in: {tracks_csv_path}. "
+            "Scarica ed estrai fma_metadata.zip in 'data/'."
+        )
+
+    print(f"[Dataset] Caricamento metadati da '{tracks_csv_path}'...")
+    # Multi-index header a 2 livelli tipico di FMA
+    tracks = pd.read_csv(metadata_file, index_col=0, header=[0, 1], low_memory=False)
+    
+    # Filtra il set 'small' (8.000 brani)
+    small_set = tracks[tracks[("set", "subset")] == "small"]
+    
+    selected_files: List[Tuple[str, int]] = []
+    skipped_corrupted = 0
+
+    print(f"[Dataset] Campionamento di {samples_per_genre} tracce per genere...")
+    for genre, group in small_set.groupby(("track", "genre_top")):
+        # Estrai casualmente samples_per_genre per ogni genere
+        sampled = group.sample(n=min(samples_per_genre, len(group)), random_state=seed)
+        
+        for track_id in sampled.index:
+            tid_str = f"{track_id:06d}"
+            subfolder = tid_str[:3]
+            file_path = root / subfolder / f"{tid_str}.mp3"
+
+            if file_path.exists():
+                # Controllo rapido integrità per scartare tracce corrotte
+                if is_audio_valid(str(file_path)):
+                    selected_files.append((str(file_path), 0))
+                else:
+                    skipped_corrupted += 1
+
+    print(f"[Dataset] Selezionati {len(selected_files)} brani bilanciati (saltati {skipped_corrupted} non integri).")
+    return selected_files
 
 def is_audio_valid(file_path: str, min_samples: int = 65488) -> bool:
     """Verifica rapidamente se l'header audio è integro e sufficientemente lungo."""
@@ -325,11 +375,23 @@ def get_clmr_dataloaders(
     val_split: float = 0.2,
     num_workers: int = 0,
     seed: int = 42,
+    max_samples: Optional[int] = None,
+    samples_per_genre: Optional[int] = None,
+    metadata_path: str = "data/fma_metadata/tracks.csv",
 ) -> Tuple[DataLoader, DataLoader]:
     """
     Crea i DataLoader per il pre-training CLMR.
     """
-    all_files = find_audio_files(data_dir)
+    if samples_per_genre is not None and "fma" in str(data_dir).lower():
+        all_files = get_stratified_fma_files(
+            fma_dir=data_dir,
+            tracks_csv_path=metadata_path,
+            samples_per_genre=samples_per_genre,
+            seed=seed,
+        )
+    else:
+        all_files = find_audio_files(data_dir)
+
     if not all_files:
         raise FileNotFoundError(
             f"Nessun file audio trovato in '{data_dir}'. "
@@ -339,6 +401,10 @@ def get_clmr_dataloaders(
     # Split deterministico con seed
     rng = torch.Generator().manual_seed(seed)
     shuffled_indices = torch.randperm(len(all_files), generator=rng).tolist()
+
+    if max_samples is not None and max_samples < len(all_files):
+        print(f"[Dataset] Sottocampionamento attivo: uso {max_samples} tracce su {len(all_files)} totali.")
+        shuffled_indices = shuffled_indices[:max_samples]
 
     val_size = int(len(all_files) * val_split)
     train_indices = shuffled_indices[val_size:]
