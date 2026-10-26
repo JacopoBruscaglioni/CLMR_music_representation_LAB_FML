@@ -57,6 +57,7 @@ def parse_args():
     )
 
     # Parametri di addestramento
+    parser.add_argument("--val_split", type=float, default=0.2, help="Percentuale di dati per la validazione")
     parser.add_argument("--epochs", type=int, default=50, help="Numero di epoche di pre-training")
     parser.add_argument("--batch_size", type=int, default=32, help="Dimensione del batch")
     parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate iniziale")
