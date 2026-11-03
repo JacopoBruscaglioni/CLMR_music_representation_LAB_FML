@@ -121,10 +121,13 @@ def train_one_epoch(model, dataloader, criterion, optimizer, gpu_pipeline, devic
 
         # 3. Forward pass ResNet e calcolo loss
         optimizer.zero_grad()
-        out_1 = model(feat_1)
+        '''out_1 = model(feat_1)
         out_2 = model(feat_2)
 
-        loss = criterion(out_1, out_2)
+        loss = criterion(out_1, out_2)'''
+        _, z_1 = model(feat_1)
+        _, z_2 = model(feat_2)
+        loss = criterion(z_1, z_2)
         loss.backward()
         optimizer.step()
 
@@ -145,10 +148,10 @@ def validate(model, dataloader, criterion, gpu_pipeline, device):
             feat_1 = gpu_pipeline(view_1)
             feat_2 = gpu_pipeline(view_2)
 
-            out_1 = model(feat_1)
-            out_2 = model(feat_2)
+            _, z_1 = model(feat_1)
+            _, z_2 = model(feat_2)
 
-            loss = criterion(out_1, out_2)
+            loss = criterion(z_, out_2)
             total_loss += loss.item()
 
     return total_loss / len(dataloader)

@@ -17,6 +17,7 @@ import time
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.utils.data import TensorDataset, DataLoader
 from tqdm import tqdm
 import numpy as np
 from sklearn.metrics import classification_report, roc_auc_score
@@ -36,14 +37,34 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Linear Probing su GTZAN con Backbone CLMR congelato")
     parser.add_argument("--data_dir", type=str, default="data/genres_original")
     parser.add_argument("--checkpoint_path", type=str, default="checkpoints/clmr_best_backbone.pt")
-    parser.add_argument("--epochs", type=int, default=30, help="Epoche di addestramento della testa lineare")
-    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--epochs", type=int, default=40, help="Epoche di addestramento della testa lineare")
+    parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate per il classificatore")
     parser.add_argument("--num_segments", type=int, default=10, help="Numero di finestre da aggregare per brano nel test")
-    parser.add_argument("--num_workers", type=int, default=0)
+    parser.add_argument("--num_workers", type=int, default=2)
     parser.add_argument("--seed", type=int, default=42)
     return parser.parse_args()
 
+def extract_all_train_features(encoder, dataloader, device):
+    """
+    Estrae le feature (512-d) dell'intero train set una sola volta.
+    Questo rende l'addestramento locale del classificatore immediato.
+    """
+    encoder.eval()
+    all_feats = []
+    all_targets = []
+
+    print("[Offline Feature Extraction] Estrazione feature del training set...")
+    with torch.no_grad():
+        for specs, targets in tqdm(dataloader, desc="Estrazione Embedding", leave=False):
+            specs = specs.to(device)
+            feats = encoder.encode(specs)
+            all_feats.append(feats.cpu())
+            all_targets.append(targets.cpu())
+
+    X = torch.cat(all_feats, dim=0)
+    y = torch.cat(all_targets, dim=0)
+    return X, y
 
 def train_classifier(encoder, classifier, dataloader, criterion, optimizer, device, epoch):
     encoder.eval()       # L'encoder rimane sempre in eval (pesi e BatchNorm congelati)
@@ -91,7 +112,10 @@ def evaluate_aggregated(encoder, classifier, dataloader, device):
             # Riorganizza per passare tutti i segmenti in un unico forward pass
             specs_flattened = multi_specs.view(B * S, C, H, W).to(device)
             features = encoder.encode(specs_flattened)           # [B * S, 512]
-            logits = classifier(features)                         # [B * S, 10]
+
+            features_norm = torch.nn.functional.normalize(features, p=2, dim=-1)
+
+            logits = classifier(features_norm)                         # [B * S, 10]
 
             # Riconfigura a [B, S, 10] e calcola la media dei logits tra i segmenti dello stesso brano
             logits_reshaped = logits.view(B, S, -1)
@@ -139,6 +163,7 @@ def main():
 
     print("\n" + "=" * 60)
     print(" LINEAR PROBING: VALUTAZIONE RAPPRESENTAZIONI CLMR")
+    print(f" Device:           {device}")
     print(f" Checkpoint:       {args.checkpoint_path}")
     print(f" Epoche Probe:     {args.epochs}")
     print(f" Batch Size:       {args.batch_size}")
@@ -169,17 +194,38 @@ def main():
         param.requires_grad = False
     encoder.eval()
 
+    # 3_1. Pre-estrazione delle feature del train set
+    X_train, y_train = extract_all_train_features(encoder, train_loader, device) 
+
+    # Normalizzazione L2 delle feature
+    X_train_norm = torch.nn.functional.normalize(X_train, p=2, dim=-1)
+    train_feat_dataset = TensorDataset(X_train_norm, y_train)
+    train_feat_loader = DataLoader(train_feat_dataset, batch_size=args.batch_size, shuffle=True)
+
     # 4. Istanzia la sola testa di classificazione lineare (512 -> 10)
     classifier = AudioLinearClassifier(in_features=512, num_classes=len(GTZAN_GENRES)).to(device)
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(classifier.parameters(), lr=args.lr)
+    optimizer = optim.AdamW(classifier.parameters(), lr=args.lr, weight_decay=1e-4)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
 
-    # 5. Training loop del linear classifier
-    print("Inizio addestramento della testa lineare (encoder congelato)...")
+    # 5. Training loop ultra-rapido sui vettori pre-estratti
+    print("\nInizio addestramento della testa lineare...")
     for epoch in range(1, args.epochs + 1):
-        loss = train_classifier(encoder, classifier, train_loader, criterion, optimizer, device, epoch)
-        if epoch % 5 == 0 or epoch == args.epochs:
-            print(f"Epoca [{epoch:02d}/{args.epochs:02d}] - Linear Probe Loss: {loss:.4f}")
+        classifier.train()
+        total_loss = 0.0
+        
+        for feats, targets in train_feat_loader:
+            feats, targets = feats.to(device), targets.to(device)
+            optimizer.zero_grad()
+            logits = classifier(feats)
+            loss = criterion(logits, targets)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item() * feats.size(0)
+        scheduler.step()
+
+        if epoch % 40 == 0 or epoch == args.epochs:
+            print(f"Epoca [{epoch:02d}/{args.epochs:02d}] - Linear Probe Loss: {total_loss / len(train_feat_loader.dataset):.4f}")
 
     # SALVATAGGIO DEI PESI (subito dopo il ciclo for)
     os.makedirs("checkpoints", exist_ok=True)

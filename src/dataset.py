@@ -250,10 +250,11 @@ def load_audio_file(audio_path: str, target_sr: int) -> torch.Tensor:
 
 
 class GTZANCLMRDataset(Dataset):
-    def __init__(self, file_list: List[Tuple[str, int]], target_samples: int = 65488, target_sr: int = 22050):
+    def __init__(self, file_list: List[Tuple[str, int]],pipeline=None, target_samples: int = 65488, target_sr: int = 22050):
         self.file_list = file_list
-        self.target_samples = target_samples
-        self.target_sr = target_sr
+        self.target_samples = int(target_samples)
+        self.target_sr = int(target_sr)
+        self.pipeline = pipeline
 
     def __len__(self) -> int:
         return len(self.file_list)
@@ -283,7 +284,7 @@ class GTZANCLMRDataset(Dataset):
             except Exception:
                 continue
 
-        dummy = torch.zeros(1, self.target_samples)
+        dummy = torch.zeros((1, self.target_samples), dtype=torch.float32)
         return dummy, dummy
 
 class GTZANDownstreamDataset(Dataset):

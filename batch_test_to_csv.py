@@ -67,7 +67,7 @@ def load_models(args, device):
         if not os.path.exists(args.checkpoint):
             raise FileNotFoundError(f"Checkpoint fine-tuning non trovato: {args.checkpoint}")
         
-        ckpt = torch.load(args.checkpoint, map_location=device)
+        ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
         print(f"Caricamento checkpoint congiunto: {args.checkpoint}")
         
         if "backbone_state_dict" in ckpt:
@@ -88,11 +88,11 @@ def load_models(args, device):
             raise FileNotFoundError(f"Linear probe non trovata: {args.probe_path}")
 
         print(f"Caricamento backbone CLMR: {args.backbone_path}")
-        bb_ckpt = torch.load(args.backbone_path, map_location=device)
+        bb_ckpt = torch.load(args.backbone_path, map_location=device, weights_only=False )
         model.load_state_dict(bb_ckpt.get("model_state_dict", bb_ckpt))
 
         print(f"Caricamento Linear Probe: {args.probe_path}")
-        pr_ckpt = torch.load(args.probe_path, map_location=device)
+        pr_ckpt = torch.load(args.probe_path, map_location=device, weights_only=False )
         classifier.load_state_dict(pr_ckpt.get("model_state_dict", pr_ckpt))
 
     model.eval()
