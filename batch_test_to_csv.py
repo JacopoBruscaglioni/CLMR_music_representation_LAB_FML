@@ -129,7 +129,7 @@ def main():
         file_list=dummy_file_list,
         augmentation_pipeline=pipeline,
         eval_mode=True,
-        num_segments=30, ### da 10 a 30
+        num_segments=10, ### da 10 a 30
     )
 
     print(f"\nAvvio classificazione su {len(eval_dataset)} tracce ({args.mode})...\n")
@@ -142,8 +142,9 @@ def main():
 
         with torch.no_grad():
             h = model.encode(segments)
-            logits = classifier(h)
-            probs = F.softmax(logits, dim=1).mean(dim=0)
+            h_norm = F.normalize(h, p=2, dim=-1)
+            mean_logits = classifier(h_norm).mean(dim=0)
+            probs = F.softmax(mean_logits, dim=-1)
 
         sorted_indices = torch.argsort(probs, descending=True)
         top1_genre = GTZAN_GENRES[sorted_indices[0].item()]

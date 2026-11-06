@@ -29,13 +29,14 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Fine-Tuning End-to-End su GTZAN")
     parser.add_argument("--data_dir", type=str, default="data/genres_original")
     parser.add_argument("--backbone_ckpt", type=str, default="checkpoints/clmr_best_backbone.pt")
+    parser.add_argument("--probe_ckpt", type=str, default="checkpoints/linear_probe_best.pt")
     parser.add_argument("--save_path", type=str, default="checkpoints/finetuned_model_best.pt")
     parser.add_argument("--epochs", type=int, default=30, help="Epoche di fine-tuning")
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--lr_backbone", type=float, default=5e-5, help="Learning rate per la backbone (conservativo)")
     parser.add_argument("--lr_classifier", type=float, default=1e-3, help="Learning rate per la testa lineare")
     parser.add_argument("--weight_decay", type=float, default=1e-4)
-    parser.add_argument("--num_segments", type=int, default=10, help="Finestre aggregate per brano nel test")
+    parser.add_argument("--num_segments", type=int, default=5, help="Finestre aggregate per brano nel test")
     parser.add_argument("--num_workers", type=int, default=0, help="0 consigliato su Windows")
     parser.add_argument("--seed", type=int, default=42)
     return parser.parse_args()
@@ -164,7 +165,13 @@ def main():
         param.requires_grad = True
 
     classifier = AudioLinearClassifier(in_features=512, num_classes=len(GTZAN_GENRES)).to(device)
-
+    if os.path.exists(args.probe_ckpt):
+        pr_ckpt = torch.load(args.probe_ckpt, map_location=device, weights_only=False)
+        state_dict = pr_ckpt.get("model_state_dict", pr_ckpt)
+        classifier.load_state_dict(state_dict)
+        print(f"[Init] Pesi del classificatore caricati con successo da: {args.probe_ckpt}")
+    else:
+        print("[Init] Nessun probe trovato, inizializzazione casuale della testa.")
     # 3. Ottimizzatore a parametri differenziati
     optimizer = optim.AdamW([
         {"params": model.parameters(), "lr": args.lr_backbone},

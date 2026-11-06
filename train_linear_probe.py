@@ -66,32 +66,6 @@ def extract_all_train_features(encoder, dataloader, device):
     y = torch.cat(all_targets, dim=0)
     return X, y
 
-def train_classifier(encoder, classifier, dataloader, criterion, optimizer, device, epoch):
-    encoder.eval()       # L'encoder rimane sempre in eval (pesi e BatchNorm congelati)
-    classifier.train()   # Solo il linear probe impara
-    loss_meter = AverageMeter("Loss")
-
-    pbar = tqdm(dataloader, desc=f"Linear Probe [Epoca {epoch}]", leave=False)
-    for specs, targets in pbar:
-        specs = specs.to(device)
-        targets = targets.to(device)
-
-        with torch.no_grad():
-            features = encoder.encode(specs)  # [B, 512]
-
-        logits = classifier(features)        # [B, 10]
-        loss = criterion(logits, targets)
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        loss_meter.update(loss.item(), n=specs.size(0))
-        pbar.set_postfix({"Loss": f"{loss_meter.avg:.4f}"})
-
-    return loss_meter.avg
-
-
 def evaluate_aggregated(encoder, classifier, dataloader, device):
     """
     Esegue la valutazione aggregando le predizioni su segmenti multipli per ogni brano.
